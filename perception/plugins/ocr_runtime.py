@@ -279,9 +279,10 @@ def build_ocr_payload(
     with newlines between lines; ``items`` carry bbox (source-pixel
     [x1,y1,x2,y2]), score, height, prominence and line so consumers can
     reason about size and importance; ``image_size`` ([width, height]) is
-    the coordinate reference frame for every bbox. When layout analysis is
-    enabled, ``regions`` (source-pixel label/bbox/text) and the rule-based
-    Chinese ``summary`` join the payload; layout disabled → both omitted.
+    the coordinate reference frame for every bbox. ``raw_text`` is always
+    the plain OCR text; ``text`` is the layout summary when regions were
+    detected, otherwise the same plain text. ``regions`` (source-pixel
+    label/bbox/text) is present only when layout analysis found regions.
     """
     items = annotate_ocr_items(results)
     lines: dict[int, list[dict]] = {}
@@ -296,16 +297,17 @@ def build_ocr_payload(
         for _line, members in sorted(lines.items())
     )
     payload = {
-        "text": text,
+        "raw_text": text,
         "items": items,
         "timestamp": timestamp,
         "language": language,
     }
     if image_size is not None:
         payload["image_size"] = [int(image_size[0]), int(image_size[1])]
+    # 榜单约定：有版面区域时 text = 结构+内容总结，无区域时 text = OCR 原文
+    payload["text"] = summary if regions else text
     if regions:
         payload["regions"] = regions
-        payload["summary"] = summary
     if error is not None:
         payload["error"] = str(error)
     return payload
