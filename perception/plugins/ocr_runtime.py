@@ -7,6 +7,15 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 
+from plugins.ocr_layout import (
+    DEFAULT_LAYOUT_SCORE_THRESH,
+    LAYOUT_INPUT_SIZE,
+    LayoutTensorRTSession,
+    assign_regions,
+    build_layout_summary,
+    relabel_textual_regions,
+    rule_based_regions,
+)
 from plugins.ocr_preprocess import preprocess_for_ocr
 from utils.tensorrt_runtime import TensorRTEngine
 
@@ -35,6 +44,8 @@ DEFAULT_CROP_REFINEMENT_PROFILES = (
 DEFAULT_EMPTY_RESULT_RETRY_ENABLED = True
 DEFAULT_EMPTY_RESULT_RETRY_DET_THRESH = 0.1
 DEFAULT_EMPTY_RESULT_RETRY_DET_BOX_THRESH = 0.1
+DEFAULT_LAYOUT_ENGINE = ""
+DEFAULT_LAYOUT_THRESH = DEFAULT_LAYOUT_SCORE_THRESH
 
 _CROP_REFINEMENT_PROFILE_BOXES = {
     "prefix_65": (0.05, 0.00, 0.70, 1.00),
@@ -177,9 +188,38 @@ def scale_ocr_items(
     scaled_items = []
     for item in items:
         x1, y1, x2, y2 = item["bbox"]
-        scaled_items.append(
+        scaled = {
+            **item,
+            "bbox": [
+                math.floor(x1 * scale_x),
+                math.floor(y1 * scale_y),
+                math.ceil(x2 * scale_x),
+                math.ceil(y2 * scale_y),
+            ],
+        }
+        region_bbox = item.get("region_bbox")
+        if region_bbox is not None:
+            rx1, ry1, rx2, ry2 = region_bbox
+            scaled["region_bbox"] = [
+                math.floor(rx1 * scale_x),
+                math.floor(ry1 * scale_y),
+                math.ceil(rx2 * scale_x),
+                math.ceil(ry2 * scale_y),
+            ]
+        scaled_items.append(scaled)
+    return scaled_items
+
+
+def scale_layout_regions(
+    regions: list[dict] | None, scale_x: float, scale_y: float
+) -> list[dict]:
+    """Scale layout-region bboxes the same way scale_ocr_items scales items."""
+    scaled = []
+    for region in regions or []:
+        x1, y1, x2, y2 = region["bbox"]
+        scaled.append(
             {
-                **item,
+                **region,
                 "bbox": [
                     math.floor(x1 * scale_x),
                     math.floor(y1 * scale_y),
@@ -188,7 +228,7 @@ def scale_ocr_items(
                 ],
             }
         )
-    return scaled_items
+    return scaled
 
 
 def annotate_ocr_items(items: list[dict]) -> list[dict]:
@@ -225,7 +265,13 @@ def annotate_ocr_items(items: list[dict]) -> list[dict]:
 
 
 def build_ocr_payload(
-    results, timestamp, language, error=None, image_size=None
+    results,
+    timestamp,
+    language,
+    error=None,
+    image_size=None,
+    regions=None,
+    summary: str = "",
 ) -> dict:
     """Assemble the published OCR result.
 
@@ -233,7 +279,9 @@ def build_ocr_payload(
     with newlines between lines; ``items`` carry bbox (source-pixel
     [x1,y1,x2,y2]), score, height, prominence and line so consumers can
     reason about size and importance; ``image_size`` ([width, height]) is
-    the coordinate reference frame for every bbox.
+    the coordinate reference frame for every bbox. When layout analysis is
+    enabled, ``regions`` (source-pixel label/bbox/text) and the rule-based
+    Chinese ``summary`` join the payload; layout disabled → both omitted.
     """
     items = annotate_ocr_items(results)
     lines: dict[int, list[dict]] = {}
@@ -255,9 +303,43 @@ def build_ocr_payload(
     }
     if image_size is not None:
         payload["image_size"] = [int(image_size[0]), int(image_size[1])]
+    if regions:
+        payload["regions"] = regions
+        payload["summary"] = summary
     if error is not None:
         payload["error"] = str(error)
     return payload
+
+
+def _build_layout_region_payload(
+    regions: list[dict], assigned: dict[int, list[int]], items: list[dict]
+) -> list[dict]:
+    """One payload entry per region that holds at least one OCR item.
+
+    Region text is its items' recognition joined in reading order (items
+    arrive top-to-bottom, left-to-right from detection).
+    """
+    payload_regions = []
+    for region_index in sorted(assigned):
+        region = regions[region_index]
+        region_text = " ".join(
+            str(items[member].get("text") or "")
+            for member in assigned[region_index]
+        ).strip()
+        x1, y1, x2, y2 = region["bbox"]
+        payload_regions.append(
+            {
+                "label": region["label"],
+                "bbox": [
+                    math.floor(x1),
+                    math.floor(y1),
+                    math.ceil(x2),
+                    math.ceil(y2),
+                ],
+                "text": region_text,
+            }
+        )
+    return payload_regions
 
 
 def recognize_to_payload(
@@ -269,8 +351,38 @@ def recognize_to_payload(
             image_size = probe_image_header(image_bytes)
         except ValueError:
             image_size = None
+        # Regions arrive source-pixel scaled (adapter._recognize_single_pass
+        # scales them with the same factors as the items).
+        regions = getattr(adapter, "_last_regions", None) or None
+        regions_payload = None
+        summary = ""
+        if regions:
+            assigned = assign_regions(items, regions)
+            relabel_textual_regions(regions, assigned)
+            regions_payload = _build_layout_region_payload(
+                regions, assigned, items
+            )
+        # layout 模型退化（没跑或只出单一大区域）且文字足够多时，
+        # 退回规则版面分析，保住多区域结构描述。
+        if (not regions_payload or len(regions_payload) <= 1) and len(items) >= 4:
+            fallback = rule_based_regions(items, image_size or (0, 0))
+            if len(fallback) >= 2:
+                regions = fallback
+                assigned = assign_regions(items, regions)
+                regions_payload = _build_layout_region_payload(
+                    regions, assigned, items
+                )
+        if regions_payload:
+            summary = build_layout_summary(
+                regions, assigned, items, image_size or (0, 0)
+            )
         return build_ocr_payload(
-            items, timestamp, language, image_size=image_size
+            items,
+            timestamp,
+            language,
+            image_size=image_size,
+            regions=regions_payload,
+            summary=summary,
         )
     except Exception as exc:
         return build_ocr_payload([], timestamp, language, error=exc)
@@ -551,6 +663,8 @@ class _TensorRTPipeline:
         empty_result_retry: EmptyResultRetryConfig | None = None,
         use_angle_cls: bool = False,
         cls_thresh: float = DEFAULT_CLS_THRESH,
+        layout_engine: str | None = None,
+        layout_thresh: float = DEFAULT_LAYOUT_THRESH,
     ):
         from rapidocr.ch_ppocr_det.utils import DBPostProcess
         from rapidocr.ch_ppocr_rec.utils import CTCLabelDecode
@@ -585,6 +699,28 @@ class _TensorRTPipeline:
                 self._rec.close()
                 self._det.close()
                 raise
+        self._layout = None
+        self._last_regions: list[dict] | None = None
+        if layout_engine:
+            layout_path = Path(layout_engine)
+            if not layout_path.is_file():
+                # 引擎由运行时挂载注入（默认 /models/layout/layout.engine），
+                # 缺失时降级为纯 OCR，保证不带 layout 引擎的部署照常工作。
+                _log.warning(
+                    "OCR layout engine not found (%s); "
+                    "continuing without layout analysis", layout_path,
+                )
+                layout_engine = None
+            else:
+                try:
+                    self._layout = LayoutTensorRTSession(
+                        layout_path,
+                        device_id=device_id,
+                        score_thresh=float(layout_thresh),
+                    )
+                except Exception:
+                    self.close()
+                    raise
         self._det_postprocess = DBPostProcess(
             thresh=float(det_thresh),
             box_thresh=float(det_box_thresh),
@@ -647,6 +783,10 @@ class _TensorRTPipeline:
                     dtype=np.uint8,
                 ),
                 cls_shape,
+            )
+        if self._layout is not None:
+            self._layout.infer(
+                np.zeros((LAYOUT_INPUT_SIZE, LAYOUT_INPUT_SIZE, 3), dtype=np.uint8)
             )
 
     @staticmethod
@@ -744,6 +884,10 @@ class _TensorRTPipeline:
         return recognized
 
     def close(self) -> None:
+        layout = getattr(self, "_layout", None)
+        if layout is not None:
+            layout.close()
+            self._layout = None
         classifier = getattr(self, "_cls", None)
         if classifier is not None:
             classifier.close()
@@ -869,13 +1013,45 @@ class _TensorRTPipeline:
         retry_postprocess = getattr(
             self, "_empty_result_retry_postprocess", None
         )
-        if items or retry_postprocess is None:
-            return items
+        if not items and retry_postprocess is not None:
+            retry_boxes, _ = self._postprocess_detection(
+                prediction, image_shape, retry_postprocess
+            )
+            items = self._recognize_with_refinement(image, retry_boxes)
+        self._last_regions = None
+        self._attach_layout_regions(image, items)
+        return items
 
-        retry_boxes, _ = self._postprocess_detection(
-            prediction, image_shape, retry_postprocess
-        )
-        return self._recognize_with_refinement(image, retry_boxes)
+    def _attach_layout_regions(self, image, items: list[dict]) -> None:
+        """Run layout analysis and annotate items with their region.
+
+        Each item gains ``region`` (label) and ``region_bbox`` (list) when it
+        falls inside a detected layout region. Layout disabled or failed →
+        items pass through untouched, keeping the pre-layout output shape.
+        """
+        layout = getattr(self, "_layout", None)
+        if layout is None or not items:
+            return
+        try:
+            regions = layout.infer(image)
+        except Exception:
+            _log.debug("layout analysis failed, skipping regions", exc_info=True)
+            return
+        self._last_regions = regions
+        if not regions:
+            return
+        assigned = assign_regions(items, regions)
+        item_region: dict[int, int] = {}
+        for region_index, members in assigned.items():
+            for member in members:
+                item_region[member] = region_index
+        for index, item in enumerate(items):
+            region_index = item_region.get(index)
+            if region_index is None:
+                continue
+            region = regions[region_index]
+            item["region"] = region["label"]
+            item["region_bbox"] = [float(v) for v in region["bbox"]]
 
 
 class RapidOCRAdapter:
@@ -892,11 +1068,14 @@ class RapidOCRAdapter:
         det_unclip_ratio: float = DEFAULT_DET_UNCLIP_RATIO,
         crop_refinement: dict | None = None,
         empty_result_retry: dict | None = None,
+        layout_engine: str = DEFAULT_LAYOUT_ENGINE,
+        layout_thresh: float = DEFAULT_LAYOUT_THRESH,
     ):
         root = Path(model_dir)
         self._max_side_len = max_side_len
         self._request_lock = threading.Lock()
         self._inference_lock = threading.Lock()
+        self._last_regions: list[dict] | None = None
         crop_refinement_config = CropRefinementConfig.from_mapping(
             crop_refinement
         )
@@ -923,6 +1102,8 @@ class RapidOCRAdapter:
             det_thresh=det_thresh,
             det_box_thresh=det_box_thresh,
             det_unclip_ratio=det_unclip_ratio,
+            layout_engine=layout_engine or None,
+            layout_thresh=layout_thresh,
         )
         try:
             pipeline.warm_up()
@@ -945,10 +1126,17 @@ class RapidOCRAdapter:
         decoded_height, decoded_width = image.shape[:2]
         items = self._infer_image(image)
         source_width, source_height = source_size
+        scale_x = source_width / decoded_width
+        scale_y = source_height / decoded_height
+        # Regions come out in decoded-image coordinates from the pipeline;
+        # publish them in source pixels like every other bbox in the payload.
+        self._last_regions = scale_layout_regions(
+            getattr(self._pipeline, "_last_regions", None), scale_x, scale_y
+        ) or None
         return scale_ocr_items(
             items,
-            scale_x=source_width / decoded_width,
-            scale_y=source_height / decoded_height,
+            scale_x=scale_x,
+            scale_y=scale_y,
         )
 
     def recognize(self, image_bytes: bytes, language: str = "zh") -> list:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 
@@ -28,6 +29,8 @@ from plugins.ocr_runtime import (
     DEFAULT_DET_BOX_THRESH,
     DEFAULT_DET_THRESH,
     DEFAULT_DET_UNCLIP_RATIO,
+    DEFAULT_LAYOUT_ENGINE,
+    DEFAULT_LAYOUT_THRESH,
     DEFAULT_MAX_SIDE_LEN,
     DEFAULT_REC_MIN_SCORE,
     RapidOCRAdapter,
@@ -189,6 +192,12 @@ def _adapter_options(cfg: dict) -> dict:
         ),
         "crop_refinement": dict(cfg.get("crop_refinement") or {}),
         "empty_result_retry": dict(cfg.get("empty_result_retry") or {}),
+        "layout_engine": str(
+            cfg.get("layout_engine")
+            or os.environ.get("OCR_LAYOUT_ENGINE")
+            or ""
+        ),
+        "layout_thresh": float(cfg.get("layout_thresh", DEFAULT_LAYOUT_THRESH)),
     }
 
 

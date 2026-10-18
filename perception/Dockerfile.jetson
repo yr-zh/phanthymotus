@@ -688,6 +688,10 @@ ENV PYTHONUNBUFFERED=1
 # exactly the "garbage characters" that make `docker logs` unreadable.
 ENV RCUTILS_COLORIZED_OUTPUT=0
 
+# OCR 版面分析引擎路径（PicoDet-S_layout_17cls，运行时挂载注入；文件不存在
+# 时自动降级为纯 OCR）。可用 -e OCR_LAYOUT_ENGINE=... 覆盖，置空字符串禁用。
+ENV OCR_LAYOUT_ENGINE=/models/layout/layout.engine
+
 CMD ["/bin/bash", "-c", \
     "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libgomp.so.1 && \
      source /opt/ros/humble/install/setup.bash && \

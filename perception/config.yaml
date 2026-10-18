@@ -400,6 +400,11 @@ plugins:
       enabled: true
       det_thresh: 0.1
       det_box_thresh: 0.1
+    # 版面分析（PicoDet-S_layout_17cls TensorRT 引擎）。默认指向容器内挂载
+    # 路径；引擎文件不存在时自动降级为纯 OCR（行为与留空一致）。留空 = 禁用。
+    # 可用环境变量 OCR_LAYOUT_ENGINE 覆盖（如指向其他引擎路径）。
+    layout_engine: /models/layout/layout.engine
+    layout_thresh: 0.3
     ocr_fps: 1.0
 
   # 扫码：二维码 / 条形码，按需识别（actuator，没有输出 topic）
