@@ -474,6 +474,21 @@ class OCRPlugin:
             f"language={self._language}"
         )
 
+        # eager_load（榜单评测用）：构造插件时就同步加载 adapter，阻塞到
+        # 引擎就绪。main.py 在装配完所有插件后才起 MCP HTTP server，因此
+        # "MCP 端口就绪" 即 "OCR 可推理"，评测客户端的第一张图不会打到
+        # 未加载的实例（否则懒加载下首个请求会等引擎加载，评测端 120s 超时）。
+        if plugin_cfg.get("eager_load"):
+            log.info("[ocr] eager_load: 启动时同步加载 adapter（阻塞至引擎就绪）")
+            try:
+                self._adapter = _build_ocr_adapter(self._plugin_cfg)
+                self._adapter_state = "ready"
+                log.info("[ocr] eager_load: adapter 就绪")
+            except Exception as error:  # noqa: BLE001 - surfaced via state/info
+                log.exception("[ocr] eager_load: adapter 加载失败")
+                self._adapter_state = "error"
+                self._load_error = str(error)
+
     def get_tools(self) -> list:
         return TOOLS
 

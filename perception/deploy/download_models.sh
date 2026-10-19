@@ -40,15 +40,26 @@ fetch() {
         fi
     fi
     tmp="${target}.tmp.$$"
-    echo "[download_models] 下载 ${url} -> ${target}"
-    if curl -sfL -m 600 -o "${tmp}" "${url}" && [ -s "${tmp}" ]; then
-        mv "${tmp}" "${target}"
-    else
+    local attempt=1
+    while [ "${attempt}" -le 3 ]; do
+        echo "[download_models] 下载(${attempt}/3) ${url} -> ${target}"
+        if curl -sfL -m 600 -o "${tmp}" "${url}" && [ -s "${tmp}" ]; then
+            mv "${tmp}" "${target}"
+            return 0
+        fi
         rm -f "${tmp}"
-        echo "[download_models] 错误: ${name} 下载失败" >&2
-        return 1
-    fi
+        attempt=$((attempt + 1))
+        sleep 3
+    done
+    echo "[download_models] 错误: ${name} 重试 3 次仍失败" >&2
+    return 1
 }
+
+# 容器重启/多实例同机时的下载互斥（tmp+mv 本身原子，锁兜底半成品清理）
+LOCK_DIR="$(dirname "${OCR_DIR}")"
+mkdir -p "${LOCK_DIR}" 2>/dev/null
+exec 9>"${LOCK_DIR}/.model_download.lock" 2>/dev/null && \
+    { flock -w 600 9 2>/dev/null || true; }
 
 rc=0
 fetch det.engine   "${OCR_DIR}"   || rc=1

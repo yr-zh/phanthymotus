@@ -411,6 +411,9 @@ plugins:
     layout_engine: /models/layout/layout.engine
     # 上传目录在 /dev/shm 后，读取白名单必须放行（image_input.py check_under_roots）
     image_roots: [/models, /tmp, /work, /dev/shm]
+    # 榜单评测：插件构造时同步加载引擎，MCP 端口就绪即推理就绪，
+    # 避免评测首图撞上懒加载而 120s 超时
+    eager_load: true
     layout_thresh: 0.3
     ocr_fps: 1.0
 
