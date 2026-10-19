@@ -5,8 +5,11 @@ mcp_port: 15720
 # path **inside this container**, so the two containers need no shared mount.
 # See utils/file_intake.py.
 file_intake:
-  # /models is the only host-mounted writable path in this container.
-  dir: /models/uploads
+  # /dev/shm (tmpfs) 替代 /models：上传文件不落磁盘、不产生 page cache，
+  # 批量评测时内存峰值低 ~100MB+（Jetson 统一内存下 page cache 计入配额）。
+  # 需要启动参数 --shm-size=256m（默认 64M 会顶到单文件上限）。
+  # 若评测环境无法设置 shm-size，回退为 /models/uploads（image_roots 无需改）。
+  dir: /dev/shm/uploads
   max_bytes: 67108864
   # An upload is a transfer, not storage: enrolling a face leaves an embedding
   # behind and never the photograph. Without cleanup this grows forever on a
@@ -385,7 +388,9 @@ plugins:
     device_id: 0
     language: zh
     use_angle_cls: true
-    max_side_len: 1600
+    # 1280 与 1600 精度无损（50 张 A/B 一致），峰值内存 954M -> 857M，
+    # 满足评测环境 900M 内存+显存上限
+    max_side_len: 1280
     det_unclip_ratio: 0.7
     det_thresh: 0.3
     det_box_thresh: 0.5
@@ -404,6 +409,8 @@ plugins:
     # 路径；引擎文件不存在时自动降级为纯 OCR（行为与留空一致）。留空 = 禁用。
     # 可用环境变量 OCR_LAYOUT_ENGINE 覆盖（如指向其他引擎路径）。
     layout_engine: /models/layout/layout.engine
+    # 上传目录在 /dev/shm 后，读取白名单必须放行（image_input.py check_under_roots）
+    image_roots: [/models, /tmp, /work, /dev/shm]
     layout_thresh: 0.3
     ocr_fps: 1.0
 
