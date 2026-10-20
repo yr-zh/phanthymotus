@@ -19,27 +19,36 @@ plugins:
 
   tts:
     enabled: true
-    # Gentleman PhoneTone V1: jieba + ToneSandhi + 94 phone. Matcha + Vocos ORT.
-    backend: matcha
-    model_name: tts_matcha_gentleman
-    model_dir: /models/matcha-gentleman-phonetone-16k
+    # MOSS-TTS-Nano (multilingual board): Audio Tokenizer + LM, ONNX CPU-only.
+    # 48 kHz stereo codec output is lowpass-decimated to 16 kHz mono.
+    backend: moss
+    model_name: tts_moss_nano
+    model_dir: /models/moss-tts-nano-16k
     hw_provider: cuda
-    num_threads: 2
-    speaker_id: 0
-    speed: 1.0
+    num_threads: 4
+    # Builtin voice per language (matched against voice/display_name).
+    # Native voice per language; ja uses Saki as requested. ru/es/fr/de/th
+    # have no native builtin voice and fall back to the English voice.
+    voices:
+      default: "english news"
+      zh: "junhao"
+      ja: "saki"
+    # Greedy decoding: deterministic stop (short inputs never ran to the
+    # 375-frame cap under sampling), faster host-side loop, and better
+    # content accuracy for the GSB judging.
+    do_sample: false
+    # 250 frames * 80 ms = 20 s audio ceiling as a safety cap.
+    max_new_frames: 250
     text_normalize: false
     max_segment_chars: 0
-    prefer_single_pass: true
     warmup: true
     warmup_async: false
     warmup_texts:
-      - "你好"
-      - "hello"
-    # Pace ROS AudioChunk publish to wall-clock so ranking listeners that
-    # attach slightly late still hear the first segment (burst was e2e_RTF~0.13).
+      - "你好，欢迎使用语音合成服务。"
+      - "Hello, welcome to the speech synthesis service."
+      - "こんにちは、音声合成へようこそ。"
+    # MOSS does punctuation-driven prosody; segment pause only between sentences.
     realtime_pacing: false
-    noise_scale: 0.667
-    noise_scale_w: 0.8
 
   htmsg:
     enabled: false

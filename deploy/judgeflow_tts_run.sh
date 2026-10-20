@@ -35,6 +35,7 @@ if [[ -f "$ROOT/perception/plugins/tts.py" ]]; then
   RUN_ARGS+=(
     -v "$ROOT/perception/plugins/tts.py:/work/plugins/tts.py:ro"
     -v "$ROOT/perception/utils/matcha_ort.py:/work/utils/matcha_ort.py:ro"
+    -v "$ROOT/perception/utils/moss_ort.py:/work/utils/moss_ort.py:ro"
     -v "$ROOT/perception/utils/model_downloader.py:/work/utils/model_downloader.py:ro"
     -v "$ROOT/perception/utils/phonetone:/work/utils/phonetone:ro"
     -v "$ROOT/perception/config.yaml:/work/config.yaml:ro"

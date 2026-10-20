@@ -54,7 +54,7 @@ RUN cd /ros_ws && \
 # No webrtcvad/dashscope: ASR is disabled and those would need gcc after we purge it.
 RUN pip3 install --no-cache-dir -i ${PYPI_MIRROR} \
     --ignore-installed pyyaml websockets psutil \
-    kaldifst jieba pypinyin unidecode
+    kaldifst jieba pypinyin unidecode sentencepiece
 
 # Bake onnxruntime-gpu into the image (do not pip-install at container start).
 # JP5.1.1 = cp38 / ORT 1.16.3; JP6.1 = cp310 / ORT 1.23.0.
@@ -69,6 +69,18 @@ RUN set -eux; \
     pip3 install --no-cache-dir "/tmp/${ORT_WHL}"; \
     rm -f "/tmp/${ORT_WHL}"; \
     python3 -c "import onnxruntime as ort; assert 'CUDAExecutionProvider' in ort.get_available_providers(), ort.get_available_providers(); print('onnxruntime', ort.__version__, ort.get_available_providers())"
+
+# CUDA math libs (cublas/cublasLt/cufft/cudart) required by ORT CUDA/TRT EPs.
+# jetson-base strips them; the pack mirrors /usr/local/cuda-12.6 from the JP6 BSP.
+RUN set -eux; \
+    if [ "${JP_VERSION}" = "61" ]; then \
+        python3 -c "import urllib.request, sys; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])" \
+          "${JUICEFS_TTS}/cuda12-ort-libs-jp6.tar.bz2" "/tmp/cuda-libs.tar.bz2"; \
+        mkdir -p /opt/cuda12-libs; \
+        tar -xjf /tmp/cuda-libs.tar.bz2 -C /opt/cuda12-libs --strip-components=1; \
+        rm -f /tmp/cuda-libs.tar.bz2; \
+    fi
+# CUDA math libs dir must stay in LD_LIBRARY_PATH (see the final ENV below).
 
 WORKDIR /work
 COPY perception/main.py /work/main.py
@@ -92,7 +104,7 @@ RUN SITE=$(python3 -c "import site; print(site.getsitepackages()[0])") && \
     find /ros_ws/install -name "site-packages" -type d > "${SITE}/ros_ws.pth" && \
     (find /opt/ros/humble/install -name "site-packages" -type d >> "${SITE}/ros_ws.pth" 2>/dev/null || true)
 
-ENV LD_LIBRARY_PATH="/usr/lib/aarch64-linux-gnu/nvidia:/usr/lib/aarch64-linux-gnu:/usr/local/cuda/lib64:/ros_ws/install/audio_msgs/lib:/opt/ros/humble/install/lib:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="/opt/cuda12-libs:/usr/lib/aarch64-linux-gnu/nvidia:/usr/lib/aarch64-linux-gnu:/usr/local/cuda/lib64:/ros_ws/install/audio_msgs/lib:/opt/ros/humble/install/lib:${LD_LIBRARY_PATH}"
 ENV AMENT_PREFIX_PATH="/ros_ws/install/audio_msgs:/opt/ros/humble/install"
 
 ENTRYPOINT ["/deploy/entrypoint.sh"]

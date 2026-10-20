@@ -481,7 +481,8 @@ def _split_utterance(adapter, text: str) -> list[str]:
         return []
     if os.environ.get("TTS_NO_SPLIT", "0") == "1":
         return [text]
-    return _split_text_for_tts(text, _resolve_max_segment_chars(adapter))
+    fit_tokens = bool(getattr(adapter, "needs_token_split", True))
+    return _split_text_for_tts(text, _resolve_max_segment_chars(adapter), fit_tokens=fit_tokens)
 
 
 def _split_to_fit_tokens(sentence: str, budget: int = 240) -> list[str]:
@@ -505,7 +506,7 @@ def _split_to_fit_tokens(sentence: str, budget: int = 240) -> list[str]:
     return out or [sentence]
 
 
-def _split_text_for_tts(text: str, max_chars: int = MAX_SEGMENT_CHARS) -> list[str]:
+def _split_text_for_tts(text: str, max_chars: int = MAX_SEGMENT_CHARS, fit_tokens: bool = True) -> list[str]:
     """Split for TTS without chopping every comma.
 
     Always cut at 。！？； / newline / English .!? (not 3.14 or U.S.).
@@ -551,8 +552,10 @@ def _split_text_for_tts(text: str, max_chars: int = MAX_SEGMENT_CHARS) -> list[s
             if sentence:
                 if max_chars > 0:
                     segments.extend(_split_long_segment(sentence, max_chars))
-                else:
+                elif fit_tokens:
                     segments.extend(_split_to_fit_tokens(sentence))
+                else:
+                    segments.append(sentence)
             current = []
 
         index += 1
@@ -561,8 +564,10 @@ def _split_text_for_tts(text: str, max_chars: int = MAX_SEGMENT_CHARS) -> list[s
     if tail:
         if max_chars > 0:
             segments.extend(_split_long_segment(tail, max_chars))
-        else:
+        elif fit_tokens:
             segments.extend(_split_to_fit_tokens(tail))
+        else:
+            segments.append(tail)
 
     return segments
 
@@ -774,10 +779,125 @@ class MatchaPhoneToneOrtAdapter(TTSAdapter):
         return _float_samples_to_pcm16(samples)
 
 
+class MossOrtAdapter(TTSAdapter):
+    """MOSS-TTS-Nano (Audio Tokenizer + LM) ONNX, CPU-only.
+
+    Multilingual board backend: language is auto-detected per segment and
+    mapped to a builtin voice (default Saki for every language, configurable
+    per language via cfg["voices"]). The codec outputs 48 kHz stereo; we
+    lowpass-decimate to 16 kHz mono PCM16 to match the bundle contract
+    (audio/pcm-16k).
+
+    MOSS does its own punctuation-driven prosody, so sentence marks are kept
+    (the Matcha path strips them because PhoneTone re-adds its own).
+    """
+
+    needs_token_split = False
+
+    def __init__(
+        self,
+        model_dir: str,
+        model_name: str = "tts_moss_nano",
+        num_threads: int = 4,
+        voices: dict | None = None,
+        sample_mode: str | None = None,
+        do_sample: bool | None = None,
+        max_new_frames: int | None = None,
+        hw_provider: str = "cpu",
+    ):
+        import os
+
+        from utils.model_downloader import ensure_model
+        from utils.moss_ort import MossOrtTTS
+
+        ensure_model(model_name, model_dir)
+        provider = "cuda" if str(hw_provider).lower() == "cuda" else "cpu"
+        try:
+            self._tts = MossOrtTTS(
+                model_dir,
+                num_threads=num_threads,
+                voices=voices,
+                sample_mode=sample_mode,
+                do_sample=do_sample,
+                max_new_frames=max_new_frames,
+                execution_provider=provider,
+            )
+        except Exception:
+            if provider != "cuda":
+                raise
+            log.warning("[tts] MOSS CUDA init failed; falling back to CPU", exc_info=True)
+            provider = "cpu"
+            self._tts = MossOrtTTS(
+                model_dir,
+                num_threads=num_threads,
+                voices=voices,
+                sample_mode=sample_mode,
+                do_sample=do_sample,
+                max_new_frames=max_new_frames,
+                execution_provider="cpu",
+            )
+        self._model_dir = model_dir
+        self.max_segment_chars = 0
+        self.text_normalize = False
+        self._model_sr = SAMPLE_RATE
+        log.info(
+            "[tts] MOSS loaded: model_dir=%s voices=%s threads=%s",
+            model_dir,
+            voices,
+            num_threads,
+        )
+
+    def split_text(self, text: str) -> list[str]:
+        raw = (text or "").strip()
+        log.info("[tts] moss input: %s", raw)
+        segments = _split_utterance(self, raw)
+        for index, segment in enumerate(segments):
+            log.info("[tts] segment[%d/%d]: %s", index + 1, len(segments), segment)
+        return segments
+
+    def synthesize_segments_stream(self, segments: list[str]):
+        """Streaming per segment: first 16k PCM chunk is yielded after ~1 s
+        (prefill + first frame), not after the whole sentence.
+        """
+        import gc
+
+        buffer = b""
+        parts = [s.strip() for s in segments if s and s.strip()]
+        for i, segment in enumerate(parts):
+            log.info("[tts] moss synth[%d/%d]: %s", i + 1, len(parts), segment)
+            for chunk_f32 in self._tts.synthesize_stream(segment):
+                buffer += _float_samples_to_pcm16(chunk_f32)
+                while len(buffer) >= CHUNK_BYTES:
+                    yield buffer[:CHUNK_BYTES]
+                    buffer = buffer[CHUNK_BYTES:]
+            if i + 1 < len(parts) and os.environ.get("TTS_SEGMENT_PAUSE", "1") != "0":
+                buffer += _silence_pcm16(_ending_pause_ms(segment))
+            gc.collect()
+        if buffer:
+            yield buffer
+
+    def _synthesize_segment(self, text: str) -> bytes:
+        return self._tts.synthesize(text)
+
+
 def _build_tts_adapter(cfg: dict) -> TTSAdapter:
     backend = cfg.get("backend", "matcha")
+    if backend == "moss":
+        adapter = MossOrtAdapter(
+            model_dir=cfg.get("model_dir", "/models/moss-tts-nano-16k"),
+            model_name=cfg.get("model_name", "tts_moss_nano"),
+            num_threads=int(cfg.get("num_threads", 4)),
+            voices=cfg.get("voices") or None,
+            sample_mode=cfg.get("sample_mode") or None,
+            do_sample=cfg.get("do_sample"),
+            max_new_frames=int(cfg["max_new_frames"]) if cfg.get("max_new_frames") else None,
+            hw_provider=cfg.get("hw_provider", "cpu"),
+        )
+        adapter.max_segment_chars = int(cfg.get("max_segment_chars", 0))
+        adapter.text_normalize = False
+        return adapter
     if backend != "matcha":
-        raise ValueError("Gentleman image only supports backend=matcha, got %r" % backend)
+        raise ValueError("Gentleman image only supports backend=matcha|moss, got %r" % backend)
     adapter = MatchaPhoneToneOrtAdapter(
         model_dir=cfg.get("model_dir", "/models/matcha-gentleman-phonetone-16k"),
         speaker_id=int(cfg.get("speaker_id", 0)),

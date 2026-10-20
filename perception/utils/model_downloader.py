@@ -43,6 +43,27 @@ def _progress_hook(name: str):
 
 
 MODELS = {
+    "tts_moss_nano": {
+        # Multilingual board (zh/ja/ru/en/es/fr/th/de). ONNX TTS + codec pack.
+        "url": "http://172.28.4.81:34567/zhaoyiru/phanthymotus/tts/moss-tts-nano-16k.tar.bz2",
+        "check_file": "MOSS-TTS-Nano-100M-ONNX/browser_poc_manifest.json",
+        "required_files": (
+            "MOSS-TTS-Nano-100M-ONNX/browser_poc_manifest.json",
+            "MOSS-TTS-Nano-100M-ONNX/moss_tts_prefill.onnx",
+            "MOSS-TTS-Nano-100M-ONNX/moss_tts_decode_step.onnx",
+            "MOSS-TTS-Nano-100M-ONNX/moss_tts_local_decoder.onnx",
+            "MOSS-TTS-Nano-100M-ONNX/moss_tts_local_cached_step.onnx",
+            "MOSS-TTS-Nano-100M-ONNX/moss_tts_local_fixed_sampled_frame.onnx",
+            "MOSS-TTS-Nano-100M-ONNX/moss_tts_global_shared.data",
+            "MOSS-TTS-Nano-100M-ONNX/moss_tts_local_shared.data",
+            "MOSS-TTS-Nano-100M-ONNX/tokenizer.model",
+            "MOSS-Audio-Tokenizer-Nano-ONNX/codec_browser_onnx_meta.json",
+            "MOSS-Audio-Tokenizer-Nano-ONNX/moss_audio_tokenizer_encode.onnx",
+            "MOSS-Audio-Tokenizer-Nano-ONNX/moss_audio_tokenizer_decode_full.onnx",
+            "MOSS-Audio-Tokenizer-Nano-ONNX/moss_audio_tokenizer_decode_step.onnx",
+            "MOSS-Audio-Tokenizer-Nano-ONNX/moss_audio_tokenizer_decode_shared.data",
+        ),
+    },
     "tts_matcha_gentleman": {
         "url": f"{JUICEFS_BASE}/matcha-gentleman-phonetone-16k.tar.bz2",
         "check_file": "model-steps-3.onnx",
