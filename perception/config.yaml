@@ -408,7 +408,9 @@ plugins:
     # 版面分析（PicoDet-S_layout_17cls TensorRT 引擎）。默认指向容器内挂载
     # 路径；引擎文件不存在时自动降级为纯 OCR（行为与留空一致）。留空 = 禁用。
     # 可用环境变量 OCR_LAYOUT_ENGINE 覆盖（如指向其他引擎路径）。
-    layout_engine: /models/layout/layout.engine
+    # 注：评测环境单机多实例内存紧张，当前默认关闭以保 OOM 安全；
+    # 恢复时改回 /models/layout/layout.engine 即可，payload 自动附加 regions/summary。
+    layout_engine: ""
     # 上传目录在 /dev/shm 后，读取白名单必须放行（image_input.py check_under_roots）
     image_roots: [/models, /tmp, /work, /dev/shm]
     # 榜单评测：插件构造时同步加载引擎，MCP 端口就绪即推理就绪，
