@@ -692,6 +692,10 @@ ENV RCUTILS_COLORIZED_OUTPUT=0
 # 时自动降级为纯 OCR）。可用 -e OCR_LAYOUT_ENGINE=... 覆盖，置空字符串禁用。
 ENV OCR_LAYOUT_ENGINE=/models/layout/layout.engine
 
+# 评测环境经 FASTRTPS_DEFAULT_PROFILES_FILE 指向大消息 DDS profile，但该文件
+# 由评测机基础设施提供、不保证存在；镜像内置同路径副本兜底。
+COPY perception/deploy/fastdds_large_message.xml /opt/phanthy-motus/config/fastdds_large_message.xml
+
 # 启动前从 juicefs 拉取 OCR 模型（幂等；网关不可达时自动跳过，兼容挂载注入）
 RUN chmod +x /deploy/download_models.sh
 

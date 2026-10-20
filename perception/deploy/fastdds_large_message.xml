@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- 大消息 DDS profile：评测经 ROS2 topic 传 1~3MB PNG 帧，默认 UDP socket
+     缓冲太小容易丢包/延迟。评测环境通过 FASTRTPS_DEFAULT_PROFILES_FILE
+     指向 /opt/phanthy-motus/config/fastdds_large_message.xml，但该文件由
+     评测基础设施提供、不保证存在；镜像内置同路径副本作为兜底（缺失时
+     FastDDS 报 XMLPARSER Error 后静默回退默认配置，大图传输不稳定）。 -->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>udp_large</transport_id>
+      <type>UDPv4</type>
+      <sendBufferSize>16777216</sendBufferSize>
+      <receiveBufferSize>16777216</receiveBufferSize>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="large_message" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>udp_large</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+</profiles>
