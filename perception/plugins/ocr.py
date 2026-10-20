@@ -479,7 +479,13 @@ class OCRPlugin:
         # "MCP 端口就绪" 即 "OCR 可推理"，评测客户端的第一张图不会打到
         # 未加载的实例（否则懒加载下首个请求会等引擎加载，评测端 120s 超时）。
         if plugin_cfg.get("eager_load"):
-            log.info("[ocr] eager_load: 启动时同步加载 adapter（阻塞至引擎就绪）")
+            # 评测环境单机起多个实例：随机错峰 0~30s，避免所有实例同一时刻
+            # 并发加载引擎形成内存尖峰（实测 6 实例同时加载被 OOM killer 杀）。
+            import random as _random
+            import time as _time
+            jitter = _random.randint(0, 30)
+            log.info("[ocr] eager_load: 随机错峰 %ds 后加载 adapter", jitter)
+            _time.sleep(jitter)
             try:
                 self._adapter = _build_ocr_adapter(self._plugin_cfg)
                 self._adapter_state = "ready"
